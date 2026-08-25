@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Logs and outputs
+logs/
+outputs/
+*.log
+slurm-*.out
+
+# Data
+data/
+*.pt
+*.pkl
+*.npy
+*.npz
+*.csv
+*.json
+
+# Models/checkpoints
+*.h5
+*.pth
+*.pt
+*.ckpt
+
+# Containers
+*.sif
+
+# OS/editor
+.DS_Store
+.vscode/
