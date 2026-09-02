@@ -101,7 +101,9 @@ def select_device(requested_device: str, allow_cpu: bool) -> torch.device:
             "CUDA is not available. Refusing to run full-graph milestone 13B "
             "forward passes on CPU unless --allow-cpu is set."
         )
-    return torch.device(device_type)
+    if device_type == "cuda":
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
 
 
 def assert_finite(name: str, tensor: torch.Tensor) -> None:
