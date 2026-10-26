@@ -120,6 +120,7 @@ HISTORY_FIELDNAMES = [
     "best_selection_so_far",
     "rollout_swegnn_val_loss",
     "learning_rate",
+    "rollout_raw_negative_Qmag_fraction",
 ]
 SELECT_METRICS = {
     # name: (summary source, key, higher_is_better)
@@ -147,6 +148,8 @@ ROLLOUT_FIELDNAMES = [
     "CSI_0p10",
     "true_volume_m3",
     "pred_volume_m3",
+    "raw_negative_H_fraction",
+    "raw_negative_Qmag_fraction",
 ]
 
 
@@ -179,6 +182,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--loss-mask", choices=("all", "active", "where_water"), default="active"
+    )
+    parser.add_argument(
+        "--output-constraint",
+        choices=("clamp", "raw"),
+        default="clamp",
+        help=(
+            "rainfall_aware only. clamp: v1 behaviour, H and Qmag clamped to >= 0 "
+            "inside the model (zero gradient where clamped). raw: the loss sees the "
+            "unclamped output, as in the original SWE-GNN; the fed-back state and "
+            "the metrics are clamped."
+        ),
     )
     parser.add_argument(
         "--rollout-eval", action=argparse.BooleanOptionalAction, default=True
@@ -480,6 +494,7 @@ def build_model(args, static_graph, active, device):
             backbone_depth_mask=args.backbone_depth_mask,
             rain_scale=args.rainfall_scale,
             dt=args.dt,
+            output_constraint=args.output_constraint,
         ).to(device)
     else:
         if not args.backbone_depth_mask:
@@ -680,6 +695,8 @@ def evaluate_rollout(model, static_graph, events, time_indices, active, args):
                 sample = build_sample(static_graph, event, t, args, H_t=H, Qmag_t=Q)
                 pred = base.extract_prediction(model(sample), f"rollout {event['event_id']} T{t}")
                 base.assert_finite("rollout prediction", pred)
+                raw = getattr(model, "last_raw", None)
+                raw = pred if raw is None else raw
                 H = pred[:, 0].clamp_min(0.0)
                 Q = pred[:, 1].clamp_min(0.0)
                 true_H = sample.y[:, 0]
@@ -703,6 +720,8 @@ def evaluate_rollout(model, static_graph, events, time_indices, active, args):
                     "pred_positive_cells": int((H[active] > 0).sum().item()),
                     "true_volume_m3": true_H[active].sum().item() * args.cell_area,
                     "pred_volume_m3": H[active].sum().item() * args.cell_area,
+                    "raw_negative_H_fraction": (raw[active, 0] < 0).float().mean().item(),
+                    "raw_negative_Qmag_fraction": (raw[active, 1] < 0).float().mean().item(),
                 }
                 for threshold in CSI_THRESHOLDS:
                     row[threshold_label(threshold)] = csi(H[active], true_H[active], threshold)
@@ -718,6 +737,12 @@ def evaluate_rollout(model, static_graph, events, time_indices, active, args):
         "Qmag_RMSE_active_mean": sum(r["Qmag_RMSE_active"] for r in rows) / len(rows),
         "steps_with_all_dry_prediction": sum(r["pred_positive_cells"] == 0 for r in rows),
         "steps_with_zero_Qmag_prediction": sum(r["pred_Qmag_max"] == 0.0 for r in rows),
+        "raw_negative_Qmag_fraction_mean": (
+            sum(r["raw_negative_Qmag_fraction"] for r in rows) / len(rows)
+        ),
+        "raw_negative_H_fraction_mean": (
+            sum(r["raw_negative_H_fraction"] for r in rows) / len(rows)
+        ),
     }
     for threshold in CSI_THRESHOLDS:
         label = threshold_label(threshold)
@@ -845,6 +870,7 @@ def main() -> None:
         "rain_source_input": args.rain_source_input,
         "backbone_depth_mask": args.backbone_depth_mask,
         "loss_mask": args.loss_mask,
+        "output_constraint": args.output_constraint,
         "metrics_mask": "active",
         "active_mask_rule": "DEM != DEM.max()",
         "active_cell_count": active_count,
@@ -1038,6 +1064,9 @@ def main() -> None:
                     "selection_value": value,
                     "best_selection_so_far": best_selection,
                     "rollout_swegnn_val_loss": rollout.get("swegnn_val_loss"),
+                    "rollout_raw_negative_Qmag_fraction": rollout.get(
+                        "raw_negative_Qmag_fraction_mean"
+                    ),
                     "learning_rate": learning_rate,
                 }
             )
@@ -1047,7 +1076,8 @@ def main() -> None:
                 rollout_text = (
                     f" | AR CSI0.05 {rollout['CSI_0p05_mean']} "
                     f"H_RMSE {rollout['H_RMSE_active_mean']:.4g} "
-                    f"zeroQ {rollout['steps_with_zero_Qmag_prediction']}"
+                    f"zeroQ {rollout['steps_with_zero_Qmag_prediction']} "
+                    f"negQraw {rollout['raw_negative_Qmag_fraction_mean']:.3f}"
                 )
             print(
                 f"Epoch {epoch}/{total_epochs} k={rollout_steps} | "

@@ -14,6 +14,14 @@ Changes with respect to v1 (v1 is kept unchanged for reproducibility):
    this wrapper apply.
 3. The hydraulic mask is passed in explicitly instead of being rebuilt
    inside the source head.
+4. Output constraints are configurable (output_constraint):
+   - "clamp" (v1 behaviour): H and Qmag are clamped to >= 0 and Qmag is zeroed
+     where H is zero. Clamped cells receive exactly zero gradient, so a cell
+     whose raw Qmag turns negative cannot recover during training.
+   - "raw": the unclamped prediction (zero only outside the hydraulic mask) is
+     returned, as in the original SWE-GNN, whose loss uses the raw output.
+     The caller clamps the state that is fed back and the metrics.
+   The last unclamped output is kept in `last_raw` for diagnostics.
 
 This is still an empirical research prototype, not a mass-conserving solver.
 The original SWE-GNN code is not modified: the depth mask is switched off on
@@ -117,8 +125,15 @@ class RainfallAwareSWEGNNV2(nn.Module):
         backbone_depth_mask: bool = False,
         rain_scale: float = 300000.0,
         dt: float = 300.0,
+        output_constraint: str = "clamp",
     ):
         super().__init__()
+        if output_constraint not in ("clamp", "raw"):
+            raise ValueError(
+                f"output_constraint must be 'clamp' or 'raw', got {output_constraint!r}"
+            )
+        self.output_constraint = output_constraint
+        self.last_raw = None
         self.backbone = backbone
         self.backbone_depth_mask = bool(backbone_depth_mask)
         if not self.backbone_depth_mask:
@@ -148,8 +163,15 @@ class RainfallAwareSWEGNNV2(nn.Module):
             raise ValueError("Rainfall source and backbone size mismatch")
 
         active = self.active
-        h = (baseline[:, 0] + rainfall_increment).clamp_min(0.0)
-        h = torch.where(active, h, torch.zeros_like(h))
-        q = baseline[:, 1].clamp_min(0.0)
-        q = torch.where(active & (h > 0), q, torch.zeros_like(q))
+        h_raw = torch.where(
+            active, baseline[:, 0] + rainfall_increment, torch.zeros_like(baseline[:, 0])
+        )
+        q_raw = torch.where(active, baseline[:, 1], torch.zeros_like(baseline[:, 1]))
+        self.last_raw = torch.stack([h_raw, q_raw], dim=1).detach()
+        if self.output_constraint == "raw":
+            return torch.stack([h_raw, q_raw], dim=1)
+
+        h = h_raw.clamp_min(0.0)
+        q = q_raw.clamp_min(0.0)
+        q = torch.where(h > 0, q, torch.zeros_like(q))
         return torch.stack([h, q], dim=1)
