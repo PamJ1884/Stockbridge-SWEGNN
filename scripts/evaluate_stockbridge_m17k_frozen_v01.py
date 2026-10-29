@@ -124,7 +124,7 @@ def main() -> None:
     if args.split == "test" and args.audit_json is None:
         raise ValueError("--split test requires --audit-json from the prior validation pass")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise RuntimeError("GPU CUDA required for this frozen test evaluation")
     if not dataset.is_dir():
